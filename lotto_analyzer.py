@@ -1,188 +1,228 @@
 import streamlit as st
 import pandas as pd
-from collections import Counter
-from itertools import combinations
+import numpy as np
+from datetime import timedelta, datetime
 
-# --- Page Configuration ---
-st.set_page_config(page_title="Lotto Split Strategy Engine", layout="wide")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Sidian Automaton 3.0", layout="wide", initial_sidebar_state="expanded")
 
-st.title("🎱 Lotto Strategy Engine: Splits & Followers")
+# --- CSS FOR VISUALS ---
 st.markdown("""
-**Advanced Mode:** This engine calculates not just *what* numbers are coming, but *how* they arrive (Direct vs. Splits).
-""")
+<style>
+    .big-font { font-size:20px !important; font-weight: bold; }
+    .highlight { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
+    .red-alert { color: #ff4b4b; font-weight: bold; }
+    .green-go { color: #00c853; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
 
-# --- Sidebar: Configuration ---
-st.sidebar.header("1. Upload Data")
-uploaded_file = st.sidebar.file_uploader("Upload History (.xlsx or .csv)", type=['xlsx', 'csv'])
+# --- SESSION STATE (To keep manual data alive) ---
+if 'manual_draws' not in st.session_state:
+    st.session_state.manual_draws = []
 
-st.sidebar.header("2. Game Settings")
-game_type = st.sidebar.radio("Select Game Type:", ("UK 49s (6 + Bonus)", "SA Daily Lotto (5 Numbers)"))
+def get_numbers(row):
+    """Extract numbers from a row regardless of column names"""
+    cols = [c for c in row.index if str(c).startswith('N') or c == 'Bonus']
+    return [int(x) for x in row[cols] if pd.notnull(x) and isinstance(x, (int, float))]
 
-# --- Helper Functions ---
+# --- MAIN APP ---
+st.title("🎱 Sidian Automaton: The 3D Logic Engine")
+st.markdown("This system scans for **Time Echoes**, **Rapid Fire Patterns**, and **Grid Vacuums**.")
 
-def clean_data(df, game_type):
-    """Standardizes column names."""
-    cols = df.columns.tolist()
-    if game_type == "SA Daily Lotto (5 Numbers)":
-        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-        if len(numeric_cols) >= 5:
-            rename_map = {numeric_cols[i]: f'N{i+1}' for i in range(5)}
-            df = df.rename(columns=rename_map)
-            return df[['N1', 'N2', 'N3', 'N4', 'N5']]
-    elif game_type == "UK 49s (6 + Bonus)":
-        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-        if len(numeric_cols) >= 7:
-            rename_map = {numeric_cols[i]: f'N{i+1}' for i in range(6)}
-            rename_map[numeric_cols[6]] = 'Bonus'
-            df = df.rename(columns=rename_map)
-            return df[['N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'Bonus']]
-    return df
-
-def get_row_numbers(row, game_type):
-    """Returns a set of numbers for a given row."""
-    if game_type == "SA Daily Lotto (5 Numbers)":
-        return {row[f'N{k}'] for k in range(1, 6)}
-    else:
-        nums = {row[f'N{k}'] for k in range(1, 7)}
-        if 'Bonus' in row:
-            nums.add(row['Bonus'])
-        return nums
-
-def get_next_numbers_list(df, index, game_type):
-    """Returns the next draw numbers as a list."""
-    if index + 1 >= len(df): return []
-    row = df.iloc[index + 1]
-    if game_type == "SA Daily Lotto (5 Numbers)":
-        return sorted([row[f'N{k}'] for k in range(1, 6)])
-    else:
-        # For splits, we look at the main 6 numbers usually
-        return sorted([row[f'N{k}'] for k in range(1, 7)])
-
-# --- Core Analysis Engines ---
-
-def analyze_patterns(df, current_numbers, game_type):
-    """Standard Frequency Analysis."""
-    predictions = Counter()
-    matches_found = 0
-    match_threshold = 3
+# 1. SIDEBAR - DATA ENTRY
+with st.sidebar:
+    st.header("1. Load Data")
+    uploaded_file = st.file_uploader("Upload History (CSV/Excel)", type=['xlsx', 'csv'])
     
-    # Pre-calculate set for speed
-    current_set = set(current_numbers)
-    
-    for i in range(len(df) - 1):
-        row_set = get_row_numbers(df.iloc[i], game_type)
+    st.header("2. Update Live")
+    st.caption("Add draws missing from your file:")
+    with st.form("add_draw"):
+        m_date = st.date_input("Draw Date", datetime.today())
+        m_nums = st.text_input("Numbers (e.g. 5,18,24,36,41,48,20)")
+        submit_m = st.form_submit_button("Inject Draw")
         
-        # Intersection Match
-        if len(current_set.intersection(row_set)) >= match_threshold:
-            matches_found += 1
-            predictions.update(get_next_numbers_list(df, i, game_type))
-            
-        # Bonus Match (High Weight) - UK49 Only
-        if game_type == "UK 49s (6 + Bonus)" and len(current_numbers) > 6:
-            bonus = current_numbers[-1]
-            if 'Bonus' in df.columns and df.iloc[i]['Bonus'] == bonus:
-                predictions.update(get_next_numbers_list(df, i, game_type))
-                predictions.update(get_next_numbers_list(df, i, game_type)) # Double weight
-                
-    return predictions
-
-def analyze_splits(df, current_numbers, top_targets, game_type):
-    """
-    The Discovery Engine: Finds Split Pairs for Top Targets.
-    Logic: If Target 'T' is predicted, find pairs (A, B) in next draw where |A-B|=T or A+B=T.
-    """
-    split_stats = {t: Counter() for t in top_targets}
-    match_threshold = 3
-    current_set = set(current_numbers)
-    
-    for i in range(len(df) - 1):
-        row_set = get_row_numbers(df.iloc[i], game_type)
-        
-        # Check if this historical draw is similar to current (3+ matches or Bonus match)
-        is_match = len(current_set.intersection(row_set)) >= match_threshold
-        if game_type == "UK 49s (6 + Bonus)" and len(current_numbers) > 6:
-             if 'Bonus' in df.columns and df.iloc[i]['Bonus'] == current_numbers[-1]:
-                 is_match = True
-        
-        if is_match:
-            # Look at the NEXT draw
-            next_nums = get_next_numbers_list(df, i, game_type)
-            next_pairs = list(combinations(next_nums, 2))
-            
-            for t in top_targets:
-                for (a, b) in next_pairs:
-                    # Check Difference Split
-                    if abs(a - b) == t:
-                        split_stats[t][(a, b, 'Diff')] += 1
-                    # Check Sum Split
-                    if a + b == t:
-                        split_stats[t][(a, b, 'Sum')] += 1
-                        
-    return split_stats
-
-# --- Main App Interface ---
-
-if uploaded_file is not None:
-    try:
-        # Load & Clean
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-        df_clean = clean_data(df, game_type)
-        
-        st.success(f"📂 Loaded {len(df_clean)} draws.")
-        
-        # Input
-        st.subheader("Enter Last Draw Results")
-        user_input = st.text_input("Numbers (Space separated, Bonus last for UK49):", "")
-        
-        if st.button("🚀 Run Split Analysis"):
-            if user_input:
-                current_nums = [int(x) for x in user_input.split()]
-                
-                # 1. Run Basic Analysis to get Targets
-                with st.spinner("Finding most likely targets..."):
-                    raw_predictions = analyze_patterns(df_clean, current_nums, game_type)
-                
-                if not raw_predictions:
-                    st.warning("No historical patterns found. Try entering just the Bonus or 3 numbers.")
+        if submit_m and m_nums:
+            try:
+                # Parse
+                n_list = [int(x.strip()) for x in m_nums.split(',')]
+                if len(n_list) >= 6:
+                    entry = {'Date': pd.Timestamp(m_date)}
+                    for i in range(6): entry[f'N{i+1}'] = n_list[i]
+                    entry['Bonus'] = n_list[6] if len(n_list) > 6 else 0
+                    st.session_state.manual_draws.append(entry)
+                    st.success("Draw Injected!")
                 else:
-                    # Get Top 7 Targets (The numbers we expect to drop)
-                    top_targets = [n for n, c in raw_predictions.most_common(7)]
-                    
-                    # 2. Run Split Analysis on these Targets
-                    with st.spinner("Calculating Split Follow-ups..."):
-                        split_data = analyze_splits(df_clean, current_nums, top_targets, game_type)
-                    
-                    # --- DISPLAY RESULTS ---
-                    
-                    col1, col2 = st.columns([1, 2])
-                    
-                    with col1:
-                        st.subheader("🏆 Top Targets")
-                        st.write("Most likely numbers to follow:")
-                        for idx, (num, hits) in enumerate(raw_predictions.most_common(7)):
-                            st.metric(f"Rank {idx+1}", num, f"{hits} Hits")
-                            
-                    with col2:
-                        st.subheader("🔀 Split Strategy (The Follow-Ups)")
-                        st.info("Instead of playing the Target directly, play these pairs that CREATE the target.")
-                        
-                        for target in top_targets:
-                            splits = split_data[target].most_common(3)
-                            if splits:
-                                with st.expander(f"Target {target} - Best Splits", expanded=True):
-                                    for (p1, p2, type_), count in splits:
-                                        if type_ == 'Diff':
-                                            st.write(f"**{p1} & {p2}** (Diff {target}) - {count} times")
-                                        else:
-                                            st.write(f"**{p1} & {p2}** (Sum {target}) - {count} times")
-                            else:
-                                st.write(f"Target {target}: No strong split pattern.")
+                    st.error("Need 6+ numbers")
+            except:
+                st.error("Invalid Format")
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+    if st.session_state.manual_draws:
+        st.write("---")
+        st.write(f"**Injected Draws:** {len(st.session_state.manual_draws)}")
+        if st.button("Clear Manual Data"):
+            st.session_state.manual_draws = []
+            st.rerun()
+
+# 2. DATA PROCESSING
+if uploaded_file or st.session_state.manual_draws:
+    # A. Load File
+    if uploaded_file:
+        if uploaded_file.name.endswith('.csv'): df = pd.read_csv(uploaded_file)
+        else: df = pd.read_excel(uploaded_file)
+    else:
+        df = pd.DataFrame(columns=['Date', 'N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'Bonus'])
+
+    # B. Clean Dates
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    df = df.dropna(subset=['Date'])
+    
+    # C. Merge Manual Data
+    if st.session_state.manual_draws:
+        manual_df = pd.DataFrame(st.session_state.manual_draws)
+        # Filter duplicates based on Date
+        existing_dates = set(df['Date'].dt.date)
+        manual_df = manual_df[~manual_df['Date'].dt.date.isin(existing_dates)]
+        df = pd.concat([df, manual_df], ignore_index=True)
+    
+    df = df.sort_values('Date').reset_index(drop=True)
+    last_date = df.iloc[-1]['Date']
+
+    # --- THE SIDIAN SCANNER (Logic Engine) ---
+    st.write("---")
+    st.subheader(f"🔍 The Sidian Scan (Status: {last_date.date()})")
+    
+    col_scan, col_grid = st.columns([2, 1])
+    
+    with col_scan:
+        target_date = st.date_input("Predicting For:", last_date + timedelta(days=1))
+        
+        candidates = []
+        for num in range(1, 50):
+            # Get History
+            hits = []
+            for idx, row in df.iterrows():
+                if num in get_numbers(row):
+                    hits.append(row['Date'])
+            
+            if len(hits) >= 3:
+                last_hit = hits[-1]
+                prev_hit = hits[-2]
+                prev_prev = hits[-3]
+                
+                # Intervals
+                current_gap = (pd.Timestamp(target_date) - last_hit).days
+                last_interval = (last_hit - prev_hit).days
+                prev_interval = (prev_hit - prev_prev).days
+                
+                reason = None
+                score = 0
+                pattern = f"{prev_interval}d → {last_interval}d"
+
+                # LOGIC 1: RAPID FIRE ECHO (Long -> Short -> Short)
+                # E.g., 20 days -> 4 days -> Expect < 5 days
+                if prev_interval > 12 and last_interval <= 6:
+                    if current_gap <= 6:
+                        reason = "🔥 Rapid Fire Echo"
+                        score = 95
+                
+                # LOGIC 2: CONSISTENT RHYTHM
+                # E.g., 4 days -> 4 days -> Expect 4 days
+                elif abs(last_interval - prev_interval) <= 1:
+                    if abs(current_gap - last_interval) <= 1:
+                        reason = "🥁 Consistent Rhythm"
+                        score = 85
+                
+                # LOGIC 3: THE ACCELERATOR
+                # E.g., 10 days -> 7 days -> Expect 4 days
+                elif prev_interval > last_interval and (prev_interval - last_interval) > 1:
+                    trend = prev_interval - last_interval
+                    expected = last_interval - trend
+                    if expected > 0 and abs(current_gap - expected) <= 2:
+                        reason = "⚡ Acceleration"
+                        score = 80
+                
+                # LOGIC 4: THE STRAGGLER (Overdue Echo)
+                # Like Number 10 today
+                if prev_interval > 15 and last_interval <= 5 and current_gap >= 4 and current_gap <= 8:
+                    reason = "⚠️ Overdue Echo (Critical)"
+                    score = 98
+
+                if reason:
+                    candidates.append({
+                        'Ball': num,
+                        'Strategy': reason,
+                        'Pattern': pattern,
+                        'Current Gap': f"{current_gap} days",
+                        'Score': score
+                    })
+        
+        # Display Results
+        if candidates:
+            res_df = pd.DataFrame(candidates).sort_values('Score', ascending=False)
+            st.dataframe(res_df.style.apply(lambda x: ['background-color: #e6fffa' if v > 90 else '' for v in x.Score], axis=1), use_container_width=True)
+        else:
+            st.info("No high-probability patterns detected for this specific date.")
+
+    # --- GRID LOGIC ---
+    with col_grid:
+        st.markdown("### 🗺️ Grid Analysis")
+        # Build Grid based on Last Draw
+        last_nums = get_numbers(df.iloc[-1])
+        
+        # 7x7 Grid
+        grid = np.zeros((7, 7))
+        for n in last_nums:
+            if 1 <= n <= 49:
+                r, c = (n-1)//7, (n-1)%7
+                grid[r, c] = 1
+        
+        st.write("Last Draw Distribution:")
+        st.write(grid)
+        
+        # Calc Empty
+        empty_rows = [r+1 for r in range(7) if sum(grid[r, :]) == 0]
+        empty_cols = [c+1 for c in range(7) if sum(grid[:, c]) == 0]
+        
+        st.error(f"**Empty Rows:** {empty_rows}")
+        st.error(f"**Empty Cols:** {empty_cols}")
+        st.caption("Tip: Pick numbers that sit in these Empty Zones.")
+
+    # --- INDIVIDUAL DEEP DIVE ---
+    st.write("---")
+    st.subheader("🔭 Deep Dive Trajectory")
+    
+    target_num = st.number_input("Check specific number:", 1, 49, 40)
+    if target_num:
+        hits = []
+        for idx, row in df.iterrows():
+            nums = get_numbers(row)
+            if target_num in nums:
+                pos = nums.index(target_num) + 1
+                hits.append({'Date': row['Date'], 'Pos': pos})
+        
+        t_df = pd.DataFrame(hits)
+        if not t_df.empty:
+            t_df['Prev'] = t_df['Date'].shift(1)
+            t_df['Interval'] = (t_df['Date'] - t_df['Prev']).dt.days
+            
+            # Prediction Logic
+            last_pos = t_df.iloc[-1]['Pos']
+            last_int = t_df.iloc[-1]['Interval']
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Last Hit", f"{t_df.iloc[-1]['Date'].date()}")
+            c2.metric("Last Interval", f"{int(last_int)} days" if pd.notnull(last_int) else "N/A")
+            c3.metric("Last Position", f"Ball {last_pos}")
+            
+            st.table(t_df[['Date', 'Pos', 'Interval']].tail(5))
+            
+            # Suggestion
+            if last_pos <= 2: suggest_pos = "Bounce High (4-6)"
+            elif last_pos >= 5: suggest_pos = "Bounce Low (1-3)"
+            else: suggest_pos = "Stabilize Mid (3-4)"
+            
+            st.success(f"**Prediction:** If playing {target_num}, target **{suggest_pos}**.")
+            
 else:
+    st.info("👋 Welcome. Upload your history file to activate the Sidian Logic.")
 
-    st.info("Upload file to start.")
