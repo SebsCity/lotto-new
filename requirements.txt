@@ -1,2 +1,4 @@
-fssgde
-
+streamlit
+pandas
+numpy
+openpyxl
